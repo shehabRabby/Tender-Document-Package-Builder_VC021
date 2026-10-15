@@ -7,7 +7,7 @@ import { dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { once } from "node:events";
 import next from "next";
-import { PDFArray, PDFDocument, PDFRawStream, decodePDFRawStream } from "pdf-lib";
+import { PDFArray, PDFDict, PDFDocument, PDFName, PDFRawStream, decodePDFRawStream } from "pdf-lib";
 
 // Run explicitly after npm run build; uses the installed Chrome, with no screenshots.
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -82,6 +82,20 @@ function pageText(page) {
   return [...decoded.matchAll(/<([0-9a-f]+)>\s*Tj/gi)].map((match) => Buffer.from(match[1], "hex").toString("latin1")).join("\n");
 }
 
+function unicodeMapText(document) {
+  return document.getPages().flatMap((page) => {
+    const fonts = page.node.Resources()?.lookup(PDFName.of("Font"), PDFDict);
+    if (!fonts) return [];
+    return fonts.entries().flatMap(([, reference]) => {
+      const font = document.context.lookup(reference, PDFDict);
+      const mapReference = font.get(PDFName.of("ToUnicode"));
+      if (!mapReference) return [];
+      const stream = document.context.lookup(mapReference, PDFRawStream);
+      return [new TextDecoder().decode(decodePDFRawStream(stream).decode())];
+    });
+  }).join("\n");
+}
+
 async function runSmoke() {
 try {
   await app.prepare();
@@ -122,6 +136,21 @@ try {
   await command("Page.navigate", { url: origin });
   await waitFor(() => contains("Your checklist starts here"), "initial empty state");
   assert.equal(await evaluate("document.querySelector('#generate-package').disabled"), true);
+  assert.ok(["light", "dark"].includes(await evaluate("document.documentElement.dataset.theme")), "system preference resolves to a supported theme");
+  assert.equal(await evaluate("document.querySelector('#theme-toggle').getAttribute('aria-label') !== null"), true, "theme control has an accessible name");
+  assert.equal(await evaluate("document.querySelector('a[href=\"#main\"]') !== null"), true, "skip link is present");
+  assert.equal(await evaluate("[...document.querySelectorAll('button')].every(button => Boolean(button.getAttribute('aria-label') || button.textContent.trim()))"), true, "all buttons have accessible names");
+  assert.equal(await evaluate("[...document.querySelectorAll('select, input[type=date]')].every(input => input.labels.length > 0)"), true, "document controls have labels");
+  await command("Input.dispatchKeyEvent", { type: "keyDown", key: "Tab", code: "Tab", windowsVirtualKeyCode: 9 });
+  await command("Input.dispatchKeyEvent", { type: "keyUp", key: "Tab", code: "Tab", windowsVirtualKeyCode: 9 });
+  assert.equal(await evaluate("document.activeElement.matches(':focus-visible')"), true, "keyboard focus is visibly indicated");
+  await evaluate("document.querySelector('#theme-toggle').click()");
+  const persistedTheme = await evaluate("document.documentElement.dataset.theme");
+  assert.equal(await evaluate("localStorage.getItem('tender-package-theme') === document.documentElement.dataset.theme"), true, "theme selection is persisted");
+  await command("Page.reload");
+  await waitFor(() => evaluate(`document.documentElement.dataset.theme === ${JSON.stringify(persistedTheme)} && Boolean(document.querySelector('#generate-package'))`), "theme survives reload without hydration errors");
+  await evaluate("document.querySelector('#theme-toggle').click()");
+  assert.notEqual(await evaluate("document.documentElement.dataset.theme"), persistedTheme, "theme control switches between light and dark");
   await evaluate("[...document.querySelectorAll('button')].find(button => button.textContent === 'বাংলা').click()");
   await waitFor(() => contains("নথির কর্মক্ষেত্র"), "React hydration and Bangla toggle");
   await evaluate("[...document.querySelectorAll('button')].find(button => button.textContent === 'EN').click()");
@@ -243,34 +272,53 @@ try {
       await waitFor(() => evaluate("window.__tenderObjectUrls.created.length === 1 && window.__tenderObjectUrls.revoked.length === 1"), "download object URL released");
       assert.equal(await evaluate("document.querySelector('#generate-package').disabled"), false, "generation can be repeated after success");
     }
-    for (const width of [320, 375, 1280]) {
+    for (const width of [320, 375, 768, 1024, 1280, 1440]) {
       await command("Emulation.setDeviceMetricsOverride", { width, height: 844, deviceScaleFactor: 1, mobile: false });
       assert.equal(await evaluate("document.documentElement.scrollWidth <= window.innerWidth"), true, `${language} layout overflow at ${width}px`);
       assert.equal(await evaluate("[...document.querySelectorAll('select, input[type=date]')].every(input => input.getBoundingClientRect().width > 120 && input.getBoundingClientRect().height >= 40)"), true, `${language} controls unusable at ${width}px`);
+      assert.equal(await evaluate("[...document.querySelectorAll('header, nav, .panel, .requirement-row, .field, .nav-step, .status-badge')].every(item => { const rect = item.getBoundingClientRect(); return rect.left >= -1 && rect.right <= window.innerWidth + 1; })"), true, `${language} workspace elements overflow at ${width}px`);
     }
   }
   await evaluate("document.querySelector('button[lang=en]').click()");
   await waitFor(() => contains("All required documents are ready"), "English restored");
 
-  const badCover = JSON.parse(readFileSync(json, "utf8"));
-  badCover.tender.tender_id = "UNSUPPORTED-COVER";
-  badCover.tender.title = "বাংলা শিরোনাম";
-  const badCoverPath = join(temporary, "unsupported-cover.json");
-  writeFileSync(badCoverPath, JSON.stringify(badCover));
-  await upload("#json-upload", [badCoverPath]);
-  await waitFor(() => contains("UNSUPPORTED-COVER"), "new tender for generation failure");
+  const unicodeTender = JSON.parse(readFileSync(json, "utf8"));
+  unicodeTender.tender.tender_id = "BANGLA-UNICODE-TEST";
+  unicodeTender.tender.title = "আইটি সরঞ্জাম সরবরাহ";
+  unicodeTender.tender.procuring_entity = "তথ্য প্রযুক্তি অধিদপ্তর";
+  unicodeTender.tender.bidder = "মেঘনা টেক সল্যুশনস লিমিটেড";
+  const unicodeJsonPath = join(temporary, "unicode-tender.json");
+  writeFileSync(unicodeJsonPath, JSON.stringify(unicodeTender));
+  await upload("#json-upload", [unicodeJsonPath]);
+  await waitFor(() => contains("BANGLA-UNICODE-TEST"), "Bangla tender metadata loaded");
   await choose("#requirement-0", "trade_license_2026.pdf");
   await date("2026-10-20");
   await choose("#requirement-1", "experience_cert.pdf");
-  await waitFor(() => evaluate("!document.querySelector('#generate-package').disabled"), "failure fixture ready");
-  await evaluate("document.querySelector('#generate-package').click()");
-  await waitFor(() => contains("Could not create or download the package"), "friendly generation error");
-  assert.equal(await evaluate("document.querySelector('#generate-package').disabled"), false, "generation failure releases loading state");
+  await waitFor(() => evaluate("!document.querySelector('#generate-package').disabled"), "Bangla tender ready for generation");
   await evaluate("document.querySelector('button[lang=bn]').click()");
-  await waitFor(() => contains("প্রচ্ছদের জন্য"), "generation failure translated");
+  await waitFor(() => contains("সব আবশ্যক নথি প্রস্তুত"), "Bangla interface remains active for Unicode package");
+  await evaluate("document.querySelector('#generate-package').click()");
+  const unicodeDownload = join(downloads, "BANGLA-UNICODE-TEST_Package.pdf");
+  await waitFor(() => existsSync(unicodeDownload), "Bangla tender package downloaded with exact filename");
+  await waitFor(() => contains("ডাউনলোড শুরু হয়েছে"), "Unicode package download success announced");
+  const unicodeOutput = await PDFDocument.load(readFileSync(unicodeDownload));
+  const unicodeValues = [unicodeTender.tender.title, unicodeTender.tender.procuring_entity, unicodeTender.tender.bidder];
+  assert.equal(unicodeOutput.getTitle(), "BANGLA-UNICODE-TEST - Tender Document Package");
+  assert.equal(unicodeOutput.getAuthor(), unicodeTender.tender.bidder);
+  assert.equal(unicodeOutput.getSubject(), unicodeTender.tender.title);
+  assert.equal(unicodeOutput.getPageCount(), 1 + (await PDFDocument.load(readFileSync(join(root, "documents", "trade_license_2026.pdf")))).getPageCount() + (await PDFDocument.load(readFileSync(join(root, "documents", "experience_cert.pdf")))).getPageCount());
+  const unicodeMaps = unicodeMapText(unicodeOutput);
+  for (const character of unicodeValues.join("")) {
+    const codePoint = character.codePointAt(0);
+    if (codePoint !== undefined && !/[\s\r\n\t]/.test(character)) assert.ok(unicodeMaps.includes(codePoint.toString(16).padStart(4, "0").toUpperCase()), `PDF font maps ${character}`);
+  }
+  const unicodeCover = pageText(unicodeOutput.getPage(0));
+  for (const label of ["Tender ID", "Tender title", "Procuring entity", "Bidder name", "Submission deadline", "Date package was made", "Included documents"]) assert.ok(unicodeCover.includes(label), `English cover includes ${label}`);
+  for (const [index, page] of unicodeOutput.getPages().entries()) assert.ok(pageText(page).includes(`BANGLA-UNICODE-TEST | Page ${index + 1} of ${unicodeOutput.getPageCount()}`));
+  await waitFor(() => evaluate("window.__tenderObjectUrls.created.length === 2 && window.__tenderObjectUrls.revoked.length === 2"), "Unicode download object URL released");
   await evaluate("document.querySelector('button[lang=en]').click()");
   await upload("#json-upload", [json]);
-  await waitFor(() => contains("UNSEEN-TEST"), "restore valid tender after generation error");
+  await waitFor(() => contains("UNSEEN-TEST"), "restore valid tender after Unicode generation");
   await choose("#requirement-0", "trade_license_2026.pdf");
   await date("2026-10-20");
   await choose("#requirement-1", "experience_cert.pdf");
@@ -282,6 +330,15 @@ try {
   assert.equal(await evaluate("document.querySelector('#generate-package').disabled"), true);
   await evaluate("document.querySelector('[aria-label=\"Remove: experience_cert (1).pdf\"]').click()");
   await waitFor(async () => (await evaluate("[...document.querySelectorAll('span')].filter(item => item.textContent === 'Duplicate').length")) === 0, "duplicate indicator clears");
+  const longName = `Long supporting tender document ${"with a deliberately long safe filename ".repeat(4)}.pdf`;
+  const longPath = join(temporary, longName);
+  const longPdf = await PDFDocument.create();
+  longPdf.addPage();
+  writeFileSync(longPath, await longPdf.save());
+  await upload("#pdf-upload", [longPath]);
+  await waitFor(() => contains(longName), "long filename is available in file details");
+  assert.equal(await evaluate("document.documentElement.scrollWidth <= window.innerWidth"), true, "long filename does not cause horizontal overflow");
+  assert.equal(await evaluate(`[...document.querySelectorAll('li')].some(item => item.textContent.includes(${JSON.stringify(longName)}) && item.getBoundingClientRect().right <= window.innerWidth + 1)`), true, "long filename remains within its uploaded-file row");
   assert.deepEqual(exceptions, [], "browser runtime errors");
   assert.equal(requests.every((url) => url.startsWith(origin) || url.startsWith("data:") || url.startsWith(`blob:${origin}/`)), true, "document workflow sent an external request");
 } finally {

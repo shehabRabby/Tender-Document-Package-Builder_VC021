@@ -1,9 +1,11 @@
 import { PDFContentStream, PDFDocument, StandardFonts, clip, degrees, endPath, popGraphicsState, pushGraphicsState, rectangle, rgb, type PDFFont, type PDFPage } from "pdf-lib";
+import fontkit from "@pdf-lib/fontkit";
+import "regenerator-runtime/runtime";
 import { sortRequirements } from "./requirements";
 import { canGeneratePackage } from "./status";
 import type { DocumentMatches, ExpiryDateState, TenderData, TenderRequirement, UploadedPdf } from "./types";
 
-export type PackageErrorCode = "NOT_READY" | "INVALID_DOCUMENT" | "UNSUPPORTED_TEXT" | "GENERATION_FAILED" | "DOWNLOAD_FAILED";
+export type PackageErrorCode = "NOT_READY" | "INVALID_DOCUMENT" | "UNSUPPORTED_TEXT" | "FONT_LOAD_FAILED" | "GENERATION_FAILED" | "DOWNLOAD_FAILED";
 
 export class PackagePdfError extends Error {
   constructor(public readonly code: PackageErrorCode, public readonly filename?: string) {
@@ -47,6 +49,42 @@ const FOOTER_SIDE_MARGIN = 24;
 const COVER_WIDTH = 595.28;
 const COVER_MIN_HEIGHT = 841.89;
 const COVER_MARGIN = 44;
+const COVER_TOP_OFFSET = 123;
+const COVER_FOOTER_GAP = PACKAGE_FOOTER_HEIGHT + 16;
+const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+let coverFontBytes: Promise<Uint8Array> | null = null;
+
+function loadCoverFont(): Promise<Uint8Array> {
+  if (!coverFontBytes) {
+    coverFontBytes = fetch("/fonts/NotoSansBengali.ttf")
+      .then((response) => {
+        if (!response.ok) throw new Error("Font asset unavailable");
+        return response.arrayBuffer();
+      })
+      .then((bytes) => new Uint8Array(bytes))
+      .catch(() => {
+        coverFontBytes = null;
+        throw new PackagePdfError("FONT_LOAD_FAILED");
+      });
+  }
+  return coverFontBytes;
+}
+
+function assertFontSupportsText(font: ReturnType<typeof fontkit.create>, values: readonly string[]): void {
+  for (const value of values) {
+    for (const character of value) {
+      if (/[\r\n\t]/.test(character)) continue;
+      const codePoint = character.codePointAt(0);
+      if (codePoint !== undefined && !font.hasGlyphForCodePoint(codePoint)) {
+        throw new PackagePdfError("UNSUPPORTED_TEXT");
+      }
+    }
+  }
+}
+
+function fontForText(text: string, regular: PDFFont, unicode: PDFFont): PDFFont {
+  return /^[\x00-\x7f]*$/.test(text) ? regular : unicode;
+}
 
 export function getIncludedDocuments(
   data: TenderData,
@@ -110,7 +148,8 @@ function pagePoint(box: PageBox, rotation: number, x: number, y: number): { x: n
   }
 }
 
-function drawFooter(page: PDFPage, text: string, font: PDFFont): void {
+function drawFooter(page: PDFPage, text: string, regular: PDFFont, unicode: PDFFont): void {
+  const font = fontForText(text, regular, unicode);
   const box = page.getMediaBox();
   const rotation = normalizedRotation(page.getRotation().angle);
   const width = rotation === 90 || rotation === 270 ? box.height : box.width;
@@ -146,12 +185,12 @@ function wrapText(text: string, font: PDFFont, size: number, maxWidth: number): 
       }
       if (line) lines.push(line);
       line = "";
-      for (const character of word) {
-        if (line && font.widthOfTextAtSize(line + character, size) > maxWidth) {
+      for (const { segment } of graphemes.segment(word)) {
+        if (line && font.widthOfTextAtSize(line + segment, size) > maxWidth) {
           lines.push(line);
           line = "";
         }
-        line += character;
+        line += segment;
       }
     }
     lines.push(line);
@@ -166,9 +205,12 @@ function drawCover(
   madeDate: string,
   regular: PDFFont,
   bold: PDFFont,
+  coverFont: PDFFont,
   totalPages: number,
 ): void {
-  const coverWidth = Math.max(COVER_WIDTH, regular.widthOfTextAtSize(formatPackageFooter(data.tender.tender_id, totalPages, totalPages), FOOTER_FONT_SIZE) + 2 * FOOTER_SIDE_MARGIN);
+  const coverFooter = formatPackageFooter(data.tender.tender_id, 1, totalPages);
+  const footerFont = fontForText(coverFooter, regular, coverFont);
+  const coverWidth = Math.max(COVER_WIDTH, footerFont.widthOfTextAtSize(coverFooter, FOOTER_FONT_SIZE) + 2 * FOOTER_SIDE_MARGIN);
   const width = coverWidth - 2 * COVER_MARGIN;
   const fields = [
     ["Tender ID", data.tender.tender_id],
@@ -177,25 +219,32 @@ function drawCover(
     ["Bidder name", data.tender.bidder],
     ["Submission deadline", data.tender.submission_deadline],
     ["Date package was made", madeDate],
-  ].map(([label, value]) => ({ label, lines: wrapText(value, regular, 11, width) }));
+  ].map(([label, value]) => {
+    const font = /^[\x00-\x7f]*$/.test(value) ? regular : coverFont;
+    return { label, font, lines: wrapText(value, font, 11, width) };
+  });
   const included = documents.length > 0
-    ? documents.map(({ requirement }, index) => wrapText(`${index + 1}. ${requirement.title_en}`, regular, 10, width))
-    : [["No documents included."]];
+    ? documents.map(({ requirement }, index) => {
+      const text = `${index + 1}. ${requirement.title_en}`;
+      const font = /^[\x00-\x7f]*$/.test(text) ? regular : coverFont;
+      return { font, lines: wrapText(text, font, 10, width) };
+    })
+    : [{ font: regular, lines: ["No documents included."] }];
   const fieldsHeight = fields.reduce((height, field) => height + 24 + field.lines.length * 15, 0);
-  const listHeight = included.reduce((height, lines) => height + lines.length * 14 + 6, 0);
+  const listHeight = included.reduce((height, item) => height + item.lines.length * 14 + 6, 0);
   // Keep exactly one cover, making it taller when a long ordered list needs space.
-  const height = Math.max(COVER_MIN_HEIGHT, 150 + fieldsHeight + listHeight + PACKAGE_FOOTER_HEIGHT + COVER_MARGIN);
+  const height = Math.max(COVER_MIN_HEIGHT, COVER_TOP_OFFSET + fieldsHeight + 8 + 24 + 23 + listHeight + COVER_FOOTER_GAP);
   const page = output.addPage([coverWidth, height]);
   const ink = rgb(0.12, 0.18, 0.23);
   const muted = rgb(0.38, 0.43, 0.47);
   page.drawRectangle({ x: COVER_MARGIN, y: height - 53, width: 34, height: 4, color: rgb(0.03, 0.38, 0.28) });
   page.drawText("Tender Document Package", { x: COVER_MARGIN, y: height - 88, size: 23, font: bold, color: ink });
-  let y = height - 123;
+  let y = height - COVER_TOP_OFFSET;
   for (const field of fields) {
     page.drawText(field.label, { x: COVER_MARGIN, y, size: 9, font: bold, color: muted });
     y -= 17;
     for (const line of field.lines) {
-      page.drawText(line, { x: COVER_MARGIN, y, size: 11, font: regular, color: ink });
+      page.drawText(line, { x: COVER_MARGIN, y, size: 11, font: field.font, color: ink });
       y -= 15;
     }
     y -= 7;
@@ -205,14 +254,14 @@ function drawCover(
   y -= 24;
   page.drawText("Included documents", { x: COVER_MARGIN, y, size: 12, font: bold, color: ink });
   y -= 23;
-  for (const lines of included) {
-    for (const line of lines) {
-      page.drawText(line, { x: COVER_MARGIN, y, size: 10, font: regular, color: ink });
+  for (const item of included) {
+    for (const line of item.lines) {
+      page.drawText(line, { x: COVER_MARGIN, y, size: 10, font: item.font, color: ink });
       y -= 14;
     }
     y -= 6;
   }
-  drawFooter(page, formatPackageFooter(data.tender.tender_id, 1, totalPages), regular);
+  drawFooter(page, coverFooter, regular, coverFont);
 }
 
 const yieldToBrowser = () => new Promise<void>((done) => setTimeout(done, 0));
@@ -247,9 +296,26 @@ export async function generatePackagePdf(
     const output = await PDFDocument.create();
     const regular = await output.embedFont(StandardFonts.Helvetica);
     const bold = await output.embedFont(StandardFonts.HelveticaBold);
+    let coverFont: PDFFont;
+    try {
+      output.registerFontkit(fontkit);
+      const fontBytes = await loadCoverFont();
+      const parsedFont = fontkit.create(fontBytes);
+      assertFontSupportsText(parsedFont, [
+        data.tender.tender_id,
+        data.tender.title,
+        data.tender.procuring_entity,
+        data.tender.bidder,
+        ...included.map(({ requirement }) => requirement.title_en),
+      ]);
+      coverFont = await output.embedFont(fontBytes, { subset: true });
+    } catch (error: unknown) {
+      if (error instanceof PackagePdfError) throw error;
+      throw new PackagePdfError("FONT_LOAD_FAILED");
+    }
     const madeDate = formatPackageMadeDate(madeAt);
     try {
-      drawCover(output, data, included, madeDate, regular, bold, totalPages);
+      drawCover(output, data, included, madeDate, regular, bold, coverFont, totalPages);
     } catch {
       throw new PackagePdfError("UNSUPPORTED_TEXT");
     }
@@ -261,7 +327,8 @@ export async function generatePackagePdf(
           const pageNumber = output.getPageCount() + 1;
           const footer = formatPackageFooter(data.tender.tender_id, pageNumber, totalPages);
           const originalBox = page.getMediaBox();
-          const box = getFooterSafePageBox(originalBox, page.getRotation().angle, regular.widthOfTextAtSize(footer, FOOTER_FONT_SIZE) + 2 * FOOTER_SIDE_MARGIN);
+          const footerFont = fontForText(footer, regular, coverFont);
+          const box = getFooterSafePageBox(originalBox, page.getRotation().angle, footerFont.widthOfTextAtSize(footer, FOOTER_FONT_SIZE) + 2 * FOOTER_SIDE_MARGIN);
           isolateOriginalContent(page, originalBox);
           page.setMediaBox(box.x, box.y, box.width, box.height);
           page.setCropBox(box.x, box.y, box.width, box.height);
@@ -269,7 +336,7 @@ export async function generatePackagePdf(
           page.setBleedBox(box.x, box.y, box.width, box.height);
           page.setArtBox(box.x, box.y, box.width, box.height);
           output.addPage(page);
-          drawFooter(page, footer, regular);
+          drawFooter(page, footer, regular, coverFont);
           onProgress?.({ stage: "rendering", completed: pageNumber, total: totalPages });
           await yieldToBrowser();
         }

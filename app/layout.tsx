@@ -1,4 +1,6 @@
 import type { Metadata } from "next";
+import { MotionProvider } from "@/components/motion-provider";
+import { themeBootstrap } from "@/lib/theme-bootstrap";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -7,5 +9,5 @@ export const metadata: Metadata = {
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
-  return <html lang="en"><body>{children}</body></html>;
+  return <html lang="en" suppressHydrationWarning><head><script dangerouslySetInnerHTML={{ __html: themeBootstrap }} /></head><body><MotionProvider>{children}</MotionProvider></body></html>;
 }

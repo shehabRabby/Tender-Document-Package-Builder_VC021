@@ -1,4 +1,5 @@
 import { formatNumber, type TranslationDictionary } from "@/lib/i18n";
+import { m } from "framer-motion";
 import { getFileAssignment } from "@/lib/matching";
 import { sortRequirements } from "@/lib/requirements";
 import { getRequirementStatus } from "@/lib/status";
@@ -6,11 +7,11 @@ import type { DocumentMatches, DocumentStatus, ExpiryDateState, Language, Tender
 import { Icon } from "./icon";
 
 const statusStyles: Record<DocumentStatus, string> = {
-  MISSING: "bg-red-50 text-red-800 ring-red-200",
-  EXPIRY_NEEDED: "bg-amber-50 text-amber-800 ring-amber-200",
-  EXPIRED: "bg-red-50 text-red-800 ring-red-200",
-  NOT_PROVIDED: "bg-slate-100 text-slate-600 ring-slate-200",
-  OK: "bg-emerald-50 text-emerald-800 ring-emerald-200",
+  MISSING: "border-destructive/25 bg-destructive/8 text-destructive",
+  EXPIRY_NEEDED: "border-warning/25 bg-warning/10 text-warning",
+  EXPIRED: "border-destructive/25 bg-destructive/8 text-destructive",
+  NOT_PROVIDED: "border-border bg-muted/60 text-muted-foreground",
+  OK: "border-success/25 bg-success/10 text-success",
 };
 
 interface RequirementListProps {
@@ -36,31 +37,31 @@ export function RequirementList({ data, files, matches, expiryDates, language, t
   if (data.requirements.length === 0) return <div className="empty-state"><p>{t.noRequirements}</p></div>;
 
   return (
-    <ol className="divide-y divide-slate-200/80">
+    <ol className="divide-y divide-border">
       {sortRequirements(data.requirements).map((requirement, index) => {
         const file = files.find((candidate) => candidate.id === matches[requirement.id]);
         const status = getRequirementStatus(requirement, file, expiryDates[requirement.id], data.tender.submission_deadline);
         const title = language === "bn" ? requirement.title_bn : requirement.title_en;
         const inputId = `requirement-${index}`;
         return (
-          <li key={requirement.id} className="p-4 transition-colors duration-200 hover:bg-slate-50/40 sm:p-6">
+          <li key={requirement.id} className="requirement-row" data-status={status}>
             <div className="flex items-start gap-3">
-              <span className="mt-0.5 flex h-8 min-w-8 shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-slate-50 px-1 text-xs font-semibold tabular-nums text-slate-600">{formatNumber(requirement.order, language)}</span>
+              <span className="mt-0.5 flex h-8 min-w-8 shrink-0 items-center justify-center rounded-lg border border-border bg-muted/50 px-1 font-mono text-xs font-medium tabular-nums text-muted-foreground">{formatNumber(requirement.order, language)}</span>
               <div className="min-w-0 flex-1">
                 <div className="flex flex-wrap items-start justify-between gap-2">
                   <div className="min-w-0">
-                    <h3 className="break-words text-sm font-semibold leading-relaxed text-slate-900">{title}</h3>
+                    <h3 className="break-words text-sm font-semibold leading-relaxed text-foreground">{title}</h3>
                     <div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-xs leading-relaxed">
-                      <span className="break-all font-medium text-slate-500">{requirement.id}</span>
-                      <span className={`rounded-md px-1.5 py-0.5 ${requirement.mandatory ? "bg-slate-100 font-medium text-slate-700" : "bg-slate-50 text-slate-500"}`}>{requirement.mandatory ? t.mandatory : t.optional}</span>
-                      {requirement.has_expiry && <span className="rounded-md bg-amber-50 px-1.5 py-0.5 text-amber-800">{t.needsExpiry}</span>}
+                      <span className="break-all font-mono font-medium text-muted-foreground">{requirement.id}</span>
+                      <span className={`rounded-md border border-border px-1.5 py-0.5 ${requirement.mandatory ? "bg-muted font-medium text-foreground" : "text-muted-foreground"}`}>{requirement.mandatory ? t.mandatory : t.optional}</span>
+                      {requirement.has_expiry && <span className="inline-flex max-w-full items-center gap-1 rounded-md bg-warning/10 px-1.5 py-0.5 text-warning"><Icon name="clock" className="h-3 w-3 shrink-0" />{t.needsExpiry}</span>}
                     </div>
                   </div>
-                  <span aria-live="polite" aria-atomic="true" className={`inline-flex max-w-full items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold leading-relaxed ring-1 ring-inset ${statusStyles[status]}`}>
-                    {status === "OK" && <Icon name="check" className="h-3 w-3 shrink-0" />}{t.statuses[status]}
-                  </span>
+                  <m.span key={status} initial={{ opacity: 0.65 }} animate={{ opacity: 1 }} transition={{ duration: 0.18 }} aria-live="polite" aria-atomic="true" className={`status-badge ${statusStyles[status]}`}>
+                    <Icon name={status === "OK" ? "check" : status === "NOT_PROVIDED" ? "pending" : status === "EXPIRY_NEEDED" ? "clock" : "alert"} className="h-3.5 w-3.5 shrink-0" />{t.statuses[status]}
+                  </m.span>
                 </div>
-                <p id={`${inputId}-status`} className={`mt-2 text-xs leading-relaxed ${status === "EXPIRED" ? "text-red-700" : "text-slate-500"}`}>{t.statusHints[status]}</p>
+                <p id={`${inputId}-status`} className={`mt-2 text-xs leading-relaxed ${status === "EXPIRED" ? "text-destructive" : "text-muted-foreground"}`}>{t.statusHints[status]}</p>
                 <div className="mt-4 grid min-w-0 gap-3 sm:grid-cols-2">
                   <div className={file && requirement.has_expiry ? "min-w-0" : "min-w-0 sm:col-span-2"}>
                     <label htmlFor={inputId} className="field-label">{file ? t.changeDocument : t.document}</label>
@@ -74,19 +75,19 @@ export function RequirementList({ data, files, matches, expiryDates, language, t
                         return <option key={candidate.id} value={candidate.id} disabled={assignment !== null}>{candidate.name}{assignment ? ` (${explanation})` : ""}</option>;
                       })}
                     </select>
-                    {files.length === 0 && <p id={`${inputId}-empty`} className="mt-1.5 text-xs leading-relaxed text-slate-500">{t.noPdfsForMatching}</p>}
+                    {files.length === 0 && <p id={`${inputId}-empty`} className="mt-1.5 text-xs leading-relaxed text-muted-foreground">{t.noPdfsForMatching}</p>}
                   </div>
                   {file && requirement.has_expiry && (
                     <div className="min-w-0">
                       <label htmlFor={`${inputId}-expiry`} className="field-label">{t.expiryLabel}</label>
                       <input id={`${inputId}-expiry`} aria-describedby={`${inputId}-hint ${inputId}-status`} aria-invalid={status === "EXPIRY_NEEDED" || status === "EXPIRED"} className="field" type="date" min="0001-01-01" max="9999-12-31" disabled={disabled} value={expiryDates[requirement.id] ?? ""} onChange={(event) => onExpiry(requirement.id, event.target.value)} />
-                      <p id={`${inputId}-hint`} className="mt-1.5 text-xs leading-relaxed text-slate-500">{t.expiryHint} <span className="font-medium">{data.tender.submission_deadline}</span></p>
+                      <p id={`${inputId}-hint`} className="mt-1.5 text-xs leading-relaxed text-muted-foreground">{t.expiryHint} <span className="font-medium">{data.tender.submission_deadline}</span></p>
                     </div>
                   )}
                 </div>
-                {file && <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5">
-                  <p className="flex min-w-0 flex-1 items-start gap-1.5 break-all text-xs leading-relaxed text-slate-600"><Icon name="document" className="mt-0.5 h-3.5 w-3.5 shrink-0" /><span>{file.name}</span></p>
-                  <button type="button" disabled={disabled} aria-label={`${t.unmatch}: ${title}`} onClick={() => onMatch(requirement.id, "")} className="inline-flex min-h-11 shrink-0 items-center gap-1 rounded-md px-2 text-xs font-medium text-slate-600 transition-colors duration-200 hover:bg-red-50 hover:text-red-700 disabled:cursor-not-allowed disabled:opacity-40"><Icon name="close" className="h-3.5 w-3.5" />{t.unmatch}</button>
+                {file && <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-border bg-muted/35 px-3 py-1.5">
+                  <p className="flex min-w-0 flex-1 items-center gap-1.5 text-xs leading-relaxed text-muted-foreground" title={file.name}><Icon name="document" className="h-3.5 w-3.5 shrink-0" /><span className="truncate">{file.name}</span></p>
+                  <button type="button" disabled={disabled} aria-label={`${t.unmatch}: ${title}`} onClick={() => onMatch(requirement.id, "")} className="inline-flex min-h-11 shrink-0 items-center gap-1 rounded-lg px-2 text-xs font-medium text-muted-foreground hover:bg-destructive/10 hover:text-destructive disabled:cursor-not-allowed disabled:opacity-40"><Icon name="close" className="h-3.5 w-3.5" />{t.unmatch}</button>
                 </div>}
               </div>
             </div>

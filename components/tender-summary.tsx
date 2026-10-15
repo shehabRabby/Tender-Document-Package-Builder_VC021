@@ -1,19 +1,16 @@
 import type { TranslationDictionary } from "@/lib/i18n";
 import type { Tender } from "@/lib/types";
+import { Icon, type IconName } from "./icon";
 
 export function TenderSummary({ tender, t }: { tender: Tender; t: TranslationDictionary }) {
-  return (
-    <section className="panel border-l-4 border-l-cyan-900 p-4 sm:p-6" aria-labelledby="tender-title">
-      <span className="inline-block max-w-full break-all rounded-md bg-cyan-50 px-2.5 py-1 text-xs font-semibold text-cyan-900">{t.tenderId} · {tender.tender_id}</span>
-      <h2 id="tender-title" className="mt-3 break-words text-lg font-semibold tracking-tight text-slate-900 sm:text-xl">{tender.title}</h2>
-      <dl className="mt-5 grid gap-x-8 gap-y-4 border-t border-slate-100 pt-4 text-sm sm:grid-cols-3">
-        {[[t.procuringEntity, tender.procuring_entity], [t.bidder, tender.bidder], [t.deadline, tender.submission_deadline]].map(([label, value]) => (
-          <div key={label} className="min-w-0">
-            <dt className="text-xs font-medium text-slate-500">{label}</dt>
-            <dd className={`mt-1.5 break-words font-semibold ${label === t.deadline ? "text-cyan-900" : "text-slate-800"}`}>{value}</dd>
-          </div>
-        ))}
-      </dl>
-    </section>
-  );
+  const metadata: { label: string; value: string; icon: IconName; emphasized?: boolean }[] = [
+    { label: t.procuringEntity, value: tender.procuring_entity, icon: "building" },
+    { label: t.bidder, value: tender.bidder, icon: "bidder" },
+    { label: t.deadline, value: tender.submission_deadline, icon: "calendar", emphasized: true },
+  ];
+  return <section className="panel p-4 sm:p-6" aria-labelledby="tender-title">
+    <div className="flex flex-wrap items-center justify-between gap-3"><p className="flex items-center gap-2 text-xs font-medium text-muted-foreground"><Icon name="document" className="h-4 w-4 text-primary" />{t.tenderOverview}</p><span className="max-w-full break-all rounded-lg border border-primary/20 bg-accent px-2.5 py-1 font-mono text-xs font-medium text-primary">{t.tenderId} · {tender.tender_id}</span></div>
+    <h2 id="tender-title" className="mt-3 break-words text-lg font-semibold tracking-tight text-foreground sm:text-xl">{tender.title}</h2>
+    <dl className="mt-5 grid gap-3 sm:grid-cols-3">{metadata.map(({ label, value, icon, emphasized }) => <div key={label} className={`min-w-0 rounded-xl border p-3 ${emphasized ? "border-primary/20 bg-accent/50" : "border-border bg-muted/25"}`}><dt className="flex items-start gap-1.5 text-xs text-muted-foreground"><Icon name={icon} className="mt-0.5 h-3.5 w-3.5 shrink-0" />{label}</dt><dd className={`mt-2 break-words text-sm font-medium ${emphasized ? "text-primary" : "text-foreground"}`}>{value}</dd></div>)}</dl>
+  </section>;
 }

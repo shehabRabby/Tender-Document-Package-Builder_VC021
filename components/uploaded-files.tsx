@@ -25,25 +25,25 @@ export function UploadedFiles({ files, matches, requirements, language, t, disab
   const matchedIds = new Set(Object.values(matches));
   return (
     <>
-    {duplicates.size > 0 && <p className="border-b border-amber-100 bg-amber-50/60 px-4 py-3 text-xs leading-relaxed text-amber-900 sm:px-5">{t.duplicateExplanation}</p>}
-    <ul className="divide-y divide-slate-200/80">
+    {duplicates.size > 0 && <p className="border-b border-warning/20 bg-warning/8 px-4 py-3 text-xs leading-relaxed text-warning sm:px-6">{t.duplicateExplanation}</p>}
+    <ul className="divide-y divide-border">
       {files.map((file) => {
         const assignment = getFileAssignment(file, matches, files);
         const owner = requirements.find((item) => item.id === assignment?.requirementId);
         const ownerTitle = owner ? language === "bn" ? owner.title_bn : owner.title_en : assignment?.requirementId;
         return (
-        <li key={file.id} className="flex items-start gap-2.5 px-4 py-4 transition-colors duration-200 hover:bg-slate-50/40 sm:px-6">
-          <span className="mt-0.5 shrink-0 rounded-lg border border-cyan-100 bg-cyan-50 p-2 text-cyan-900"><Icon name="document" className="h-5 w-5" /></span>
+        <li key={file.id} className={`flex items-start gap-2.5 px-4 py-4 hover:bg-muted/30 sm:px-6 ${matchedIds.has(file.id) ? "bg-success/4" : ""}`}>
+          <span className="mt-0.5 shrink-0 rounded-xl border border-primary/15 bg-accent p-2 text-primary"><Icon name="document" className="h-5 w-5" /></span>
           <div className="min-w-0 flex-1">
-            <p className="break-all text-sm font-semibold leading-relaxed text-slate-800">{file.name}</p>
-            <p className="mt-1 text-xs text-slate-500">{formatNumber(file.pageCount, language)} {file.pageCount === 1 ? t.page : t.pages} <span aria-hidden="true">·</span> {formatFileSize(file.size, language)}</p>
+            <p className="truncate text-sm font-medium leading-relaxed text-foreground" title={file.name}>{file.name}</p>
+            <p className="mt-1 text-xs text-muted-foreground">{formatNumber(file.pageCount, language)} {file.pageCount === 1 ? t.page : t.pages} <span aria-hidden="true">·</span> {formatFileSize(file.size, language)}</p>
             <div className="mt-2 flex flex-wrap gap-1.5">
-              {duplicates.has(file.id) && <span title={t.duplicateHint} className="max-w-full rounded-md border border-amber-200 bg-amber-50 px-2 py-0.5 text-xs font-medium leading-relaxed text-amber-800">{t.duplicate}</span>}
-              {matchedIds.has(file.id) && <span className="max-w-full rounded-md border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-xs font-medium leading-relaxed text-emerald-800">{t.assigned}</span>}
+              {duplicates.has(file.id) && <span title={t.duplicateHint} className="inline-flex max-w-full items-center gap-1 rounded-md border border-warning/25 bg-warning/10 px-2 py-0.5 text-xs font-medium leading-relaxed text-warning">{t.duplicate}</span>}
+              {matchedIds.has(file.id) && <span className="inline-flex max-w-full items-center gap-1 rounded-md border border-success/25 bg-success/10 px-2 py-0.5 text-xs font-medium leading-relaxed text-success">{t.assigned}</span>}
             </div>
-            {assignment && <p className="mt-1.5 break-words text-xs leading-relaxed text-slate-500">{assignment.isDuplicate ? t.sameContentAssignedTo : t.assignedTo}: <span className="font-medium text-slate-600">{ownerTitle}</span></p>}
+            {assignment && <p className="mt-1.5 break-words text-xs leading-relaxed text-muted-foreground">{assignment.isDuplicate ? t.sameContentAssignedTo : t.assignedTo}: <span className="font-medium text-foreground">{ownerTitle}</span></p>}
           </div>
-          <button type="button" onClick={() => onRemove(file.id)} disabled={disabled} aria-label={`${t.remove}: ${file.name}`} title={t.remove} className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg text-slate-500 transition-colors duration-200 hover:bg-red-50 hover:text-red-700 disabled:cursor-not-allowed disabled:opacity-40">
+          <button type="button" onClick={() => onRemove(file.id)} disabled={disabled} aria-label={`${t.remove}: ${file.name}`} title={t.remove} className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl text-muted-foreground hover:bg-destructive/10 hover:text-destructive disabled:cursor-not-allowed disabled:opacity-40">
             <Icon name="close" className="h-4 w-4" />
           </button>
         </li>

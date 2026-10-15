@@ -4,7 +4,16 @@ import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import ts from "typescript";
-import { PDFArray, PDFDocument, PDFRawStream, decodePDFRawStream, degrees } from "pdf-lib";
+import { PDFArray, PDFDict, PDFDocument, PDFName, PDFRawStream, decodePDFRawStream, degrees } from "pdf-lib";
+
+const nativeFetch = globalThis.fetch;
+globalThis.fetch = async (input, init) => {
+  const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+  if (url === "/fonts/NotoSansBengali.ttf") {
+    return new Response(readFileSync(new URL("../public/fonts/NotoSansBengali.ttf", import.meta.url)), { status: 200 });
+  }
+  return nativeFetch(input, init);
+};
 
 // Execute the actual TypeScript helpers without adding a separate test framework.
 const loadModule = createRequire(import.meta.url);
@@ -219,6 +228,20 @@ function pdfPageText(page) {
   return [...decoded.matchAll(/<([0-9a-f]+)>\s*Tj/gi)].map((match) => Buffer.from(match[1], "hex").toString("latin1")).join("\n");
 }
 
+function unicodeMapText(document) {
+  return document.getPages().flatMap((page) => {
+    const fonts = page.node.Resources()?.lookup(PDFName.of("Font"), PDFDict);
+    if (!fonts) return [];
+    return fonts.entries().flatMap(([, reference]) => {
+      const font = document.context.lookup(reference, PDFDict);
+      const mapReference = font.get(PDFName.of("ToUnicode"));
+      if (!mapReference) return [];
+      const stream = document.context.lookup(mapReference, PDFRawStream);
+      return [new TextDecoder().decode(decodePDFRawStream(stream).decode())];
+    });
+  }).join("\n");
+}
+
 async function markedPdf(name, sizes) {
   const document = await PDFDocument.create();
   for (const [index, size] of sizes.entries()) {
@@ -285,6 +308,67 @@ test("generated PDF has one English cover, ordered full source pages, and the co
   assert.deepEqual(progress.at(-1), { stage: "saving", completed: 5, total: 5 });
 });
 
+test("Bangla tender metadata embeds Unicode on the English cover without colliding with the footer", async () => {
+  const source = await markedPdf("bangla-source.pdf", [{ width: 612, height: 792 }, { width: 792, height: 612 }]);
+  const values = {
+    title: "আইটি সরঞ্জাম সরবরাহ",
+    entity: "তথ্য প্রযুক্তি অধিদপ্তর",
+    bidder: "মেঘনা টেক সল্যুশনস লিমিটেড",
+  };
+  const data = {
+    tender: { ...tender, ...{ title: values.title, procuring_entity: values.entity, bidder: values.bidder } },
+    requirements: [{ ...requirement, has_expiry: false }],
+  };
+  const result = await generatePackagePdf(data, [source], { req: source.id }, {});
+  const output = await PDFDocument.load(result.bytes);
+  assert.equal(result.filename, "test_Package.pdf");
+  assert.equal(result.pageCount, 3);
+  assert.equal(output.getPageCount(), 3);
+  assert.equal(output.getTitle(), `${tender.tender_id} - Tender Document Package`);
+  assert.equal(output.getAuthor(), values.bidder);
+  assert.equal(output.getSubject(), values.title);
+  const cover = output.getPage(0);
+  const maps = unicodeMapText(output);
+  for (const character of [...values.title, ...values.entity, ...values.bidder]) {
+    const codePoint = character.codePointAt(0);
+    if (codePoint !== undefined && !/[\s\r\n\t]/.test(character)) {
+      assert.ok(maps.includes(codePoint.toString(16).padStart(4, "0").toUpperCase()), `Unicode map includes ${character}`);
+    }
+  }
+  const pageText = output.getPages().map(pdfPageText);
+  for (const [index, content] of pageText.entries()) assert.ok(content.includes(`test | Page ${index + 1} of 3`));
+  assert.ok(pageText[0].includes("Tender title"));
+  assert.ok(pageText[0].includes("Procuring entity"));
+  assert.ok(pageText[0].includes("Bidder name"));
+  assert.ok(cover.getMediaBox().y + cover.getMediaBox().height > 841);
+
+  const long = "আইটি সরঞ্জাম সরবরাহ ".repeat(100);
+  const longResult = await generatePackagePdf({
+    tender: { ...data.tender, title: long, procuring_entity: long, bidder: long },
+    requirements: data.requirements,
+  }, [source], { req: source.id }, {});
+  const longOutput = await PDFDocument.load(longResult.bytes);
+  assert.ok(longOutput.getPage(0).getMediaBox().height > cover.getMediaBox().height);
+  assert.equal(longOutput.getPageCount(), 3);
+  assert.ok(pdfPageText(longOutput.getPage(0)).includes("test | Page 1 of 3"));
+
+  const unicodeId = "দরপত্র-২০২৬";
+  const idPackage = await generatePackagePdf({
+    tender: { ...data.tender, tender_id: unicodeId },
+    requirements: data.requirements,
+  }, [source], { req: source.id }, {});
+  const idOutput = await PDFDocument.load(idPackage.bytes);
+  assert.equal(idPackage.filename, `${unicodeId}_Package.pdf`);
+  assert.equal(idOutput.getPageCount(), 3);
+  const idMaps = unicodeMapText(idOutput);
+  for (const character of `${unicodeId}Page 1 of 3`) {
+    const codePoint = character.codePointAt(0);
+    if (codePoint !== undefined && !/[\s\r\n\t]/.test(character)) {
+      assert.ok(idMaps.includes(codePoint.toString(16).padStart(4, "0").toUpperCase()), `Unicode footer map includes ${character}`);
+    }
+  }
+});
+
 test("footer-safe copies preserve portrait/landscape rotations and nonzero page origins without scaling or cropping", async () => {
   const source = await markedPdf("rotated.pdf", [0, 90, 180, 270].map((rotation) => ({ x: 10, y: 20, width: 300, height: 500, rotation })));
   const data = { tender, requirements: [{ ...requirement, has_expiry: false }] };
@@ -324,7 +408,7 @@ test("generation rejects blocked or duplicate assignments, unreadable files, and
   await assert.rejects(generatePackagePdf({ tender, requirements: [requirement, otherRequirement] }, [pdf, duplicate], { req: pdf.id, other: duplicate.id }, { req: deadline, other: deadline }), (error) => error.code === "NOT_READY");
   await assert.rejects(generatePackagePdf(data, [pdf], { req: pdf.id }, { req: deadline }), (error) => error.code === "INVALID_DOCUMENT" && error.filename === pdf.name);
   const source = await markedPdf("valid.pdf", [{ width: 300, height: 500 }]);
-  await assert.rejects(generatePackagePdf({ tender: { ...tender, title: "বাংলা শিরোনাম" }, requirements: [{ ...requirement, has_expiry: false }] }, [source], { req: source.id }, {}), (error) => error.code === "UNSUPPORTED_TEXT");
+  await assert.rejects(generatePackagePdf({ tender: { ...tender, title: "Unsupported emoji 🔐" }, requirements: [{ ...requirement, has_expiry: false }] }, [source], { req: source.id }, {}), (error) => error.code === "UNSUPPORTED_TEXT");
 });
 
 test("many matched documents and long cover fields stay on one complete cover", async () => {
