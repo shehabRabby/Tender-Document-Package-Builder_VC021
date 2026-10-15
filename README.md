@@ -43,7 +43,7 @@ Load a validated `requirements.json`, upload PDFs, match documents one-to-one, r
 
 ## PDF Package Rules
 
-The package starts with an English cover containing tender details and the ordered list of included documents. Matched documents follow in numeric requirement order; unmatched optional documents are skipped. Every original page is retained in order, each page receives a footer, and the file is named `<tender_id>_Package.pdf`.
+The package starts with an English cover containing tender details and the ordered list of included documents. Matched documents follow in numeric requirement order; unmatched optional documents are skipped. Every original page is retained in order, each page receives a footer, and the file is named `<tender_id>_Package.pdf`. Unsafe path and control characters in the download filename are sanitized without changing the tender ID displayed in the package.
 
 ## Tech Stack
 
@@ -55,7 +55,7 @@ The package starts with an English cover containing tender details and the order
 
 ## Privacy
 
-Tender PDFs and JSON are processed entirely in the user's browser and are not uploaded to participant-controlled servers. Documents stay in memory; the bundled cover font is served by the application itself.
+Tender PDFs and JSON are processed entirely in the user's browser and are not uploaded to participant-controlled servers. Documents stay in memory and remain available for reuse when another requirements file is loaded; requirement assignments and expiry dates reset for the new tender. The bundled cover font is served by the application itself.
 
 ## How to Run
 

@@ -98,7 +98,8 @@ export function getIncludedDocuments(
 }
 
 export function getPackageFilename(tenderId: string): string {
-  return `${tenderId}_Package.pdf`;
+  const safeTenderId = tenderId.replace(/[<>:"/\\|?*\u0000-\u001f\u007f]/g, "_").replace(/[. ]+$/g, "");
+  return `${safeTenderId || "_"}_Package.pdf`;
 }
 
 export function formatPackageFooter(tenderId: string, page: number, total: number): string {

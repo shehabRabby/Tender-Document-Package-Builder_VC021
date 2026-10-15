@@ -32,7 +32,7 @@ const { isValidIsoDate, compareIsoDates } = loadModule("../lib/dates.ts");
 const { assignDocument, hasValidMatches, getDuplicateFileIds, getFileAssignment } = loadModule("../lib/matching.ts");
 const { formatValidationError, translations } = loadModule("../lib/i18n.ts");
 const { sha256 } = loadModule("../lib/hash.ts");
-const { loadPdfFile, uploadPdfFiles, MAX_PDF_FILES, MAX_TOTAL_BYTES } = loadModule("../lib/pdf.ts");
+const { isPdfFile, loadPdfFile, uploadPdfFiles, MAX_PDF_FILES, MAX_TOTAL_BYTES } = loadModule("../lib/pdf.ts");
 const { initialWorkspace, workspaceReducer } = loadModule("../lib/workspace.ts");
 const { generatePackagePdf, getIncludedDocuments, getPackageFilename, formatPackageFooter, formatPackageMadeDate, getFooterSafePageBox, PACKAGE_FOOTER_HEIGHT } = loadModule("../lib/package-pdf.ts");
 
@@ -68,7 +68,21 @@ test("ISO date validation rejects rollover and noncanonical dates without time-z
 
 test("JSON parsing and validation rejects malformed structure, fields, dates, and duplicate IDs", () => {
   assert.equal(parseRequirementsJson("{bad json}").ok, false);
-  for (const input of [null, [], {}, { tender, requirements: "bad" }, { tender: { ...tender, submission_deadline: "2026-02-30" }, requirements: [] }, { tender, requirements: [{ ...requirement, mandatory: "true" }] }, { tender, requirements: [{ ...requirement, order: "1" }] }, { tender, requirements: [{ ...requirement, order: Infinity }] }, { tender, requirements: [requirement, { ...requirement }] }]) assert.equal(validateTenderData(input).ok, false);
+  assert.equal(parseRequirementsJson("").ok, false);
+  for (const input of [
+    null, [], {}, { requirements: [] }, { tender, requirements: "bad" },
+    { tender: { ...tender, tender_id: " " }, requirements: [] },
+    { tender: { ...tender, title: "" }, requirements: [] },
+    { tender: { ...tender, submission_deadline: "2026-02-30" }, requirements: [] },
+    { tender, requirements: [{ ...requirement, id: "" }] },
+    { tender, requirements: [{ ...requirement, title_en: "" }] },
+    { tender, requirements: [{ ...requirement, title_bn: "" }] },
+    { tender, requirements: [{ ...requirement, mandatory: "true" }] },
+    { tender, requirements: [{ ...requirement, has_expiry: 1 }] },
+    { tender, requirements: [{ ...requirement, order: "1" }] },
+    { tender, requirements: [{ ...requirement, order: Infinity }] },
+    { tender, requirements: [requirement, { ...requirement }] },
+  ]) assert.equal(validateTenderData(input).ok, false);
   assert.equal(parseRequirementsJson(`\uFEFF${JSON.stringify({ tender, requirements: [requirement] })}`).ok, true);
 });
 
@@ -79,6 +93,10 @@ test("unseen unsorted requirements are sorted numerically without mutating the i
   assert.deepEqual(result.value.requirements.map((item) => item.order), [1, 2, 10]);
   assert.deepEqual(sortRequirements(unsorted).map((item) => item.order), [1, 2, 10]);
   assert.deepEqual(unsorted.map((item) => item.order), [10, 2, 1]);
+  const equalOrders = [{ ...requirement, id: "first", order: 2 }, { ...requirement, id: "second", order: 2 }];
+  const equalResult = validateTenderData({ tender, requirements: equalOrders });
+  assert.equal(equalResult.ok, true);
+  assert.deepEqual(equalResult.value.requirements.map((item) => item.id), ["first", "second"]);
 });
 
 test("matching prevents reuse of a file or identical contents across requirements", () => {
@@ -195,6 +213,41 @@ test("the sample tender initially has eight Missing and two non-blocking Not pro
   assert.equal(summary.canGenerate, false);
 });
 
+test("the complete sample document set reaches ready and an expired license blocks until replaced", async () => {
+  const parsed = parseRequirementsJson(readFileSync(new URL("../requirements.json", import.meta.url), "utf8"));
+  assert.equal(parsed.ok, true);
+  const filenames = [
+    "trade_license_2026.pdf", "03_tin_certificate.pdf", "04_vat_certificate.pdf", "bank_solvency.pdf",
+    "experience_cert.pdf", "02_technical_proposal.pdf", "01_financial_proposal.pdf", "scan_0042.pdf",
+  ];
+  const files = await Promise.all(filenames.map(async (filename) => {
+    const path = new URL(`../documents/${filename}`, import.meta.url);
+    return loadPdfFile(new File([readFileSync(fileURLToPath(path))], filename, { type: "application/pdf" }));
+  }));
+  const byName = new Map(files.map((file) => [file.name, file]));
+  const requirementFiles = [
+    "trade_license_2026.pdf", "03_tin_certificate.pdf", "04_vat_certificate.pdf", "bank_solvency.pdf",
+    "experience_cert.pdf", null, null, "02_technical_proposal.pdf", "01_financial_proposal.pdf", "scan_0042.pdf",
+  ];
+  const matches = Object.fromEntries(requirementFiles.flatMap((filename, index) => filename ? [[`R${String(index + 1).padStart(2, "0")}`, byName.get(filename).id]] : []));
+  const expiryDates = { R01: "2027-06-30", R04: "2026-12-31" };
+  const ready = getReadinessSummary(parsed.value, files, matches, expiryDates);
+  assert.deepEqual([ready.total, ready.ok, ready.blocking, ready.notProvided, ready.canGenerate], [10, 8, 0, 2, true]);
+  assert.deepEqual(parsed.value.requirements.map((item) => getRequirementStatus(item, byName.get(requirementFiles[item.order - 1]) ?? undefined, expiryDates[item.id], parsed.value.tender.submission_deadline)), [
+    "OK", "OK", "OK", "OK", "OK", "NOT_PROVIDED", "NOT_PROVIDED", "OK", "OK", "OK",
+  ]);
+
+  const expiredLicense = await loadPdfFile(new File([readFileSync(new URL("../documents/trade_license_2025.pdf", import.meta.url))], "trade_license_2025.pdf", { type: "application/pdf" }));
+  const withExpiredLicense = [expiredLicense, ...files.slice(1)];
+  const expiredMatches = { ...matches, R01: expiredLicense.id };
+  const expired = getReadinessSummary(parsed.value, withExpiredLicense, expiredMatches, { ...expiryDates, R01: "2025-06-30" });
+  assert.equal(expired.statusCounts.EXPIRED, 1);
+  assert.equal(expired.canGenerate, false);
+  const recovered = getReadinessSummary(parsed.value, files, matches, { ...expiryDates, R01: "2027-06-30" });
+  assert.equal(recovered.statusCounts.OK, 8);
+  assert.equal(recovered.canGenerate, true);
+});
+
 test("validation errors retain schema details and can be rendered in either language", () => {
   const result = validateTenderData({ tender, requirements: [{ ...requirement, order: "1" }] });
   assert.equal(result.ok, false);
@@ -270,6 +323,9 @@ test("package inclusion sorts numerically, includes matched optional documents, 
 
 test("package filenames, footer totals, and creation date follow the required format", () => {
   assert.equal(getPackageFilename("T-2026-0417"), "T-2026-0417_Package.pdf");
+  assert.equal(getPackageFilename("bid/2026\u005cwest"), "bid_2026_west_Package.pdf");
+  assert.equal(getPackageFilename("দরপত্র ২০২৬"), "দরপত্র ২০২৬_Package.pdf");
+  assert.equal(getPackageFilename("../private:bid. "), ".._private_bid_Package.pdf");
   assert.equal(formatPackageFooter("Tender", 1, 12), "Tender | Page 1 of 12");
   assert.equal(formatPackageFooter("Tender", 12, 12), "Tender | Page 12 of 12");
   assert.throws(() => formatPackageFooter("Tender", 0, 12), RangeError);
@@ -371,6 +427,7 @@ test("Bangla tender metadata embeds Unicode on the English cover without collidi
 
 test("footer-safe copies preserve portrait/landscape rotations and nonzero page origins without scaling or cropping", async () => {
   const source = await markedPdf("rotated.pdf", [0, 90, 180, 270].map((rotation) => ({ x: 10, y: 20, width: 300, height: 500, rotation })));
+  assert.equal(source.pageCount, 4);
   const data = { tender, requirements: [{ ...requirement, has_expiry: false }] };
   const result = await generatePackagePdf(data, [source], { req: source.id }, {});
   const output = await PDFDocument.load(result.bytes);
@@ -443,6 +500,21 @@ test("real PDF loading retains original bytes, computes pages and filename-indep
   assert.notEqual(first.id, second.id);
   assert.deepEqual(first.bytes, new Uint8Array(await original.arrayBuffer()));
   assert.equal(await sha256(new TextEncoder().encode("abc")), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+});
+
+test("PDF type checks honor extension and MIME together, and page counts/hash ignore filenames", async () => {
+  assert.equal(isPdfFile({ name: "upper.PDF", type: "application/pdf" }), true);
+  assert.equal(isPdfFile({ name: "octet.PDF", type: "application/octet-stream" }), true);
+  assert.equal(isPdfFile({ name: "unknown.pdf", type: "" }), true);
+  assert.equal(isPdfFile({ name: "mismatch.pdf", type: "image/png" }), false);
+  assert.equal(isPdfFile({ name: "mismatch.png", type: "application/pdf" }), false);
+
+  const onePage = await loadPdfFile(await makePdf("একই নাম.pdf", 1));
+  const sixPages = await loadPdfFile(await makePdf("একই নাম.pdf", 6));
+  const twoPages = await loadPdfFile(await makePdf("uppercase.PDF", 2));
+  assert.deepEqual([onePage.pageCount, sixPages.pageCount, twoPages.pageCount], [1, 6, 2]);
+  assert.notEqual(onePage.sha256, sixPages.sha256, "same filename with different bytes is not a duplicate");
+  assert.notEqual(onePage.id, sixPages.id);
 });
 
 test("mixed batches retain valid PDFs and show failures for non-PDF, renamed junk, damaged and empty files", async () => {

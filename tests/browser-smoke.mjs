@@ -62,9 +62,9 @@ async function choose(selector, filename) {
   })()`);
 }
 
-async function date(value) {
+async function date(value, index = 0) {
   await evaluate(`(() => {
-    const input = document.querySelector('input[type="date"]');
+    const input = [...document.querySelectorAll('input[type="date"]')][${index}];
     Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, ${JSON.stringify(value)});
     input.dispatchEvent(new Event('input', { bubbles: true }));
     input.dispatchEvent(new Event('change', { bubbles: true }));
@@ -136,14 +136,62 @@ try {
   await command("Page.navigate", { url: origin });
   await waitFor(() => contains("Your checklist starts here"), "initial empty state");
   assert.equal(await evaluate("document.querySelector('#generate-package').disabled"), true);
+  await waitFor(() => evaluate("document.querySelector('nav a[aria-current=step]')?.getAttribute('href') === '#tender-input'"), "initial Tender navigation state");
+  await evaluate("window.location.hash = '#%'");
+  await waitFor(() => evaluate("window.location.hash === '#%'"), "malformed external hash is tolerated");
+  assert.equal(await evaluate("document.querySelector('nav a[aria-current=step]')?.getAttribute('href') === '#tender-input'"), true, "malformed hash keeps navigation usable");
+  await evaluate("document.querySelector('nav a[href=\\\"#documents-input\\\"]').click()");
+  await waitFor(() => evaluate("window.location.hash === '#documents-input'"), "documents navigation hash");
+  await waitFor(() => evaluate("document.querySelector('#documents-input').getBoundingClientRect().top > -100 && document.querySelector('#documents-input').getBoundingClientRect().top < 132"), "initial Documents anchor scroll settles");
+  await waitFor(() => evaluate("document.querySelector('nav a[aria-current=step]')?.getAttribute('href') === '#documents-input'"), "active workflow item follows hash navigation");
+  assert.equal(await evaluate("document.querySelector('nav a[aria-current=step]').getAttribute('href')"), "#documents-input", "active workflow item follows hash navigation");
+  await evaluate("document.querySelector('nav a[href=\\\"#tender-input\\\"]').click()");
+  await waitFor(() => evaluate("window.location.hash === '#tender-input'"), "Tender navigation hash");
+  await waitFor(() => evaluate("document.querySelector('#tender-input').getBoundingClientRect().top > -100 && document.querySelector('#tender-input').getBoundingClientRect().top < 132"), "Tender anchor scroll settles");
+  await waitFor(() => evaluate("document.querySelector('nav a[aria-current=step]')?.getAttribute('href') === '#tender-input'"), "sidebar can navigate back to Tender");
+  await evaluate("document.querySelector('nav a[href=\\\"#documents-input\\\"]').click()");
+  await waitFor(() => evaluate("document.querySelector('#documents-input').getBoundingClientRect().top > -100 && document.querySelector('#documents-input').getBoundingClientRect().top < 132"), "Documents anchor scroll settles");
+  await waitFor(() => evaluate("document.querySelector('nav a[aria-current=step]')?.getAttribute('href') === '#documents-input'"), "sidebar can navigate forward to Documents");
+  await evaluate("history.back()");
+  await waitFor(() => evaluate("window.location.hash === '#tender-input'"), "browser Back restores Tender hash");
+  await waitFor(() => evaluate("document.querySelector('#tender-input').getBoundingClientRect().top > -100 && document.querySelector('#tender-input').getBoundingClientRect().top < 132"), "browser Back restores Tender scroll position");
+  await waitFor(() => evaluate("document.querySelector('nav a[aria-current=step]')?.getAttribute('href') === '#tender-input'"), "browser Back restores active workflow item");
+  await evaluate("history.forward()");
+  await waitFor(() => evaluate("window.location.hash === '#documents-input'"), "browser Forward restores Documents hash");
+  await waitFor(() => evaluate("document.querySelector('#documents-input').getBoundingClientRect().top > -100 && document.querySelector('#documents-input').getBoundingClientRect().top < 132"), "browser Forward restores Documents scroll position");
+  await waitFor(() => evaluate("document.querySelector('nav a[aria-current=step]')?.getAttribute('href') === '#documents-input'"), "browser Forward restores active workflow item");
+  await evaluate("window.scrollTo(0, document.querySelector('#checklist-section').getBoundingClientRect().top + window.scrollY + 24)");
+  await waitFor(() => evaluate("document.querySelector('#checklist-section').getBoundingClientRect().top <= 132"), "manual scroll reaches the checklist section");
+  const manualScrollState = await evaluate("JSON.stringify({ active: document.querySelector('nav a[aria-current=step]')?.getAttribute('href'), scrollY: window.scrollY, checklistTop: document.querySelector('#checklist-section').getBoundingClientRect().top })");
+  assert.equal(JSON.parse(manualScrollState).active, "#checklist-section", `manual scrolling updates active workflow item: ${manualScrollState}`);
+  assert.equal(await evaluate("window.location.hash === '#documents-input'"), true, "manual scrolling does not rewrite the URL hash");
+  await command("Emulation.setDeviceMetricsOverride", { width: 320, height: 844, deviceScaleFactor: 1, mobile: true });
+  await evaluate("document.querySelector('nav a[href=\\\"#readiness-section\\\"]').click()");
+  await waitFor(() => evaluate("document.querySelector('nav a[aria-current=step]')?.getAttribute('href') === '#readiness-section'"), "mobile workflow navigation updates active item");
+  await command("Emulation.setDeviceMetricsOverride", { width: 1280, height: 844, deviceScaleFactor: 1, mobile: false });
+  await evaluate("document.querySelector('nav a[href=\\\"#documents-input\\\"]').click()");
+  await waitFor(() => evaluate("window.location.hash === '#documents-input'"), "desktop Documents hash restored");
+  await waitFor(() => evaluate("document.querySelector('#documents-input').getBoundingClientRect().top > -100 && document.querySelector('#documents-input').getBoundingClientRect().top < 132"), "desktop Documents anchor scroll settles");
+  const desktopNavigationState = await evaluate("JSON.stringify({ active: document.querySelector('nav a[aria-current=step]')?.getAttribute('href'), hash: window.location.hash, tops: ['tender-input', 'documents-input', 'checklist-section', 'readiness-section', 'generation-panel'].map(id => [id, document.querySelector('#' + id).getBoundingClientRect().top]) })");
+  assert.equal(JSON.parse(desktopNavigationState).active, "#documents-input", `restore document section before reload: ${desktopNavigationState}`);
+  await command("Page.reload");
+  await waitFor(() => evaluate("window.location.hash === '#documents-input' && document.querySelector('nav a[aria-current=step]')?.getAttribute('href') === '#documents-input'"), "reload with a section hash restores active navigation");
   assert.ok(["light", "dark"].includes(await evaluate("document.documentElement.dataset.theme")), "system preference resolves to a supported theme");
   assert.equal(await evaluate("document.querySelector('#theme-toggle').getAttribute('aria-label') !== null"), true, "theme control has an accessible name");
   assert.equal(await evaluate("document.querySelector('a[href=\"#main\"]') !== null"), true, "skip link is present");
   assert.equal(await evaluate("[...document.querySelectorAll('button')].every(button => Boolean(button.getAttribute('aria-label') || button.textContent.trim()))"), true, "all buttons have accessible names");
   assert.equal(await evaluate("[...document.querySelectorAll('select, input[type=date]')].every(input => input.labels.length > 0)"), true, "document controls have labels");
+  await evaluate("document.activeElement.blur(); document.body.setAttribute('tabindex', '-1'); document.body.focus()");
   await command("Input.dispatchKeyEvent", { type: "keyDown", key: "Tab", code: "Tab", windowsVirtualKeyCode: 9 });
   await command("Input.dispatchKeyEvent", { type: "keyUp", key: "Tab", code: "Tab", windowsVirtualKeyCode: 9 });
   assert.equal(await evaluate("document.activeElement.matches(':focus-visible')"), true, "keyboard focus is visibly indicated");
+  assert.equal(await evaluate("document.activeElement.matches('a[href=\\\"#main\\\"]')"), true, "skip link is first in keyboard order");
+  await command("Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
+  await command("Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
+  await waitFor(() => evaluate("document.activeElement.id === 'main'"), "keyboard activates the skip link");
+  await command("Emulation.setEmulatedMedia", { features: [{ name: "prefers-reduced-motion", value: "reduce" }] });
+  assert.equal(await evaluate("getComputedStyle(document.documentElement).scrollBehavior"), "auto", "reduced motion disables smooth page scrolling");
+  await command("Emulation.setEmulatedMedia", { features: [{ name: "prefers-reduced-motion", value: "no-preference" }] });
   await evaluate("document.querySelector('#theme-toggle').click()");
   const persistedTheme = await evaluate("document.documentElement.dataset.theme");
   assert.equal(await evaluate("localStorage.getItem('tender-package-theme') === document.documentElement.dataset.theme"), true, "theme selection is persisted");
@@ -247,8 +295,14 @@ try {
         URL.createObjectURL = blob => { const url = create(blob); window.__tenderObjectUrls.created.push(url); return url; };
         URL.revokeObjectURL = url => { window.__tenderObjectUrls.revoked.push(url); revoke(url); };
       })()`);
+      await command("Network.setBlockedURLs", { urls: ["*NotoSansBengali.ttf*"] });
+      await evaluate("document.querySelector('#generate-package').click()");
+      await waitFor(() => contains("ইউনিকোড প্রচ্ছদ ফন্ট লোড করা যায়নি"), "font load failure is localized and recoverable");
+      assert.equal(await evaluate("document.querySelector('#generate-package').disabled"), false, "font failure does not leave generation stuck");
+      await command("Network.setBlockedURLs", { urls: [] });
       const loadingVisible = await evaluate(`(async () => {
         const button = document.querySelector('#generate-package');
+        button.click();
         button.click();
         await new Promise(done => setTimeout(done, 0));
         return button.disabled && button.getAttribute('aria-busy') === 'true';
@@ -317,16 +371,56 @@ try {
   for (const [index, page] of unicodeOutput.getPages().entries()) assert.ok(pageText(page).includes(`BANGLA-UNICODE-TEST | Page ${index + 1} of ${unicodeOutput.getPageCount()}`));
   await waitFor(() => evaluate("window.__tenderObjectUrls.created.length === 2 && window.__tenderObjectUrls.revoked.length === 2"), "Unicode download object URL released");
   await evaluate("document.querySelector('button[lang=en]').click()");
-  await upload("#json-upload", [json]);
-  await waitFor(() => contains("UNSEEN-TEST"), "restore valid tender after Unicode generation");
+  await waitFor(() => contains("All required documents are ready"), "return to English before the official sample workflow");
+  const sampleExtras = ["04_vat_certificate.pdf", "bank_solvency.pdf", "02_technical_proposal.pdf", "01_financial_proposal.pdf", "scan_0042.pdf", "trade_license_2025.pdf"];
+  await upload("#pdf-upload", sampleExtras.map((filename) => join(root, "documents", filename)));
+  await waitFor(() => evaluate(`${JSON.stringify(sampleExtras)}.every(filename => document.body.innerText.includes(filename))`), "all remaining sample PDFs uploaded");
+  const retainedFileCount = await evaluate("document.querySelectorAll('button[aria-label^=\\\"Remove: \\\"]').length");
+  await upload("#json-upload", [join(root, "requirements.json")]);
+  await waitFor(() => contains("T-2026-0417"), "load the official sample tender over the Unicode tender");
+  await waitFor(() => evaluate("document.querySelectorAll('.requirement-row').length === 10 && [...document.querySelectorAll('.requirement-row select')].every(select => select.value === '')"), "new tender clears old assignments");
+  assert.equal(await evaluate("document.querySelectorAll('input[type=date]').length"), 0, "new tender clears old expiry values");
+  assert.equal(await evaluate("document.querySelectorAll('button[aria-label^=\\\"Remove: \\\"]').length"), retainedFileCount, "uploaded PDFs intentionally remain available across tenders");
+  assert.deepEqual(await evaluate("['total', 'ok', 'blocking', 'not-provided'].map(key => document.querySelector('#readiness-' + key).textContent)"), ["10", "0", "8", "2"]);
+
+  const sampleAssignments = [
+    [0, "trade_license_2026.pdf"], [1, "03_tin_certificate.pdf"], [2, "04_vat_certificate.pdf"],
+    [3, "bank_solvency.pdf"], [4, "experience_cert.pdf"], [7, "02_technical_proposal.pdf"],
+    [8, "01_financial_proposal.pdf"], [9, "scan_0042.pdf"],
+  ];
+  for (const [index, filename] of sampleAssignments) await choose(`#requirement-${index}`, filename);
+  await date("2027-06-30", 0);
+  await date("2026-12-31", 1);
+  await waitFor(() => evaluate("[...document.querySelectorAll('.requirement-row')].every((row, index) => row.dataset.status === ([0,1,2,3,4,7,8,9].includes(index) ? 'OK' : 'NOT_PROVIDED'))"), "official sample statuses match expected results");
+  assert.deepEqual(await evaluate("['total', 'ok', 'blocking', 'not-provided'].map(key => document.querySelector('#readiness-' + key).textContent)"), ["10", "8", "0", "2"]);
+  assert.equal(await evaluate("document.querySelector('#generate-package').disabled"), false, "official sample package becomes ready");
+  await evaluate("document.querySelector('#generate-package').click()");
+  const sampleDownload = join(downloads, "T-2026-0417_Package.pdf");
+  await waitFor(() => existsSync(sampleDownload), "official sample package downloaded with required filename");
+  await waitFor(() => evaluate("window.__tenderObjectUrls.created.length === 3 && window.__tenderObjectUrls.revoked.length === 3"), "sample download object URL released");
+  const sampleOutput = await PDFDocument.load(readFileSync(sampleDownload));
+  const includedSampleFiles = sampleAssignments.map(([, filename]) => filename);
+  const expectedSamplePages = 1 + (await Promise.all(includedSampleFiles.map(async (filename) => (await PDFDocument.load(readFileSync(join(root, "documents", filename)))).getPageCount()))).reduce((sum, count) => sum + count, 0);
+  assert.equal(sampleOutput.getPageCount(), expectedSamplePages);
+  const sampleCover = pageText(sampleOutput.getPage(0));
+  const orderedTitles = ["Trade License", "TIN Certificate", "VAT Registration Certificate", "Bank Solvency Certificate", "Experience Certificate", "Technical Proposal", "Financial Proposal", "Signed Declaration"];
+  for (const title of orderedTitles) assert.ok(sampleCover.includes(title), `sample cover includes ${title}`);
+  assert.ok(!sampleCover.includes("Audited Financial Statement"));
+  assert.ok(!sampleCover.includes("Manufacturer's Authorization"));
+  for (const [index, page] of sampleOutput.getPages().entries()) assert.ok(pageText(page).includes(`T-2026-0417 | Page ${index + 1} of ${expectedSamplePages}`));
+
+  await choose("#requirement-0", "trade_license_2025.pdf");
+  await date("2025-06-30", 0);
+  await waitFor(() => evaluate("document.querySelector('#requirement-0').closest('.requirement-row').dataset.status === 'EXPIRED'"), "expired sample license blocks package");
+  assert.equal(await evaluate("document.querySelector('#generate-package').disabled"), true);
   await choose("#requirement-0", "trade_license_2026.pdf");
-  await date("2026-10-20");
-  await choose("#requirement-1", "experience_cert.pdf");
-  await waitFor(() => contains("All required documents are ready"), "workflow recovers after generation error");
+  assert.equal(await evaluate("document.querySelector('input[type=date]').value"), "", "changing the license clears its old expiry");
+  await date("2027-06-30", 0);
+  await waitFor(() => evaluate("!document.querySelector('#generate-package').disabled"), "valid replacement license restores readiness");
 
   await evaluate("document.querySelector('[aria-label=\"Remove: trade_license_2026.pdf\"]').click()");
-  await waitFor(async () => !(await evaluate("Boolean(document.querySelector('input[type=date]'))")), "removal clears assignment and expiry input");
-  assert.equal(await contains("Missing"), true);
+  await waitFor(() => evaluate("document.querySelector('#requirement-0').closest('.requirement-row').dataset.status === 'MISSING'"), "removing a matched sample file invalidates readiness");
+  assert.equal(await evaluate("document.querySelectorAll('input[type=date]').length"), 1, "unrelated R04 expiry remains assigned");
   assert.equal(await evaluate("document.querySelector('#generate-package').disabled"), true);
   await evaluate("document.querySelector('[aria-label=\"Remove: experience_cert (1).pdf\"]').click()");
   await waitFor(async () => (await evaluate("[...document.querySelectorAll('span')].filter(item => item.textContent === 'Duplicate').length")) === 0, "duplicate indicator clears");
